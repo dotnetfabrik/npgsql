@@ -167,6 +167,7 @@ sealed partial class GeoJsonHandler : NpgsqlTypeHandler<GeoJSONObject>,
             var lines = new LineString[buf.ReadInt32(littleEndian)];
             for (var i = 0; i < lines.Length; ++i)
             {
+                await buf.Ensure(SizeOfLength, async);
                 var coordinates = new Position[buf.ReadInt32(littleEndian)];
                 for (var j = 0; j < coordinates.Length; ++j)
                 {
@@ -230,6 +231,7 @@ sealed partial class GeoJsonHandler : NpgsqlTypeHandler<GeoJSONObject>,
                 var lines = new LineString[buf.ReadInt32(littleEndian)];
                 for (var j = 0; j < lines.Length; ++j)
                 {
+                    await buf.Ensure(SizeOfLength, async);
                     var coordinates = new Position[buf.ReadInt32(littleEndian)];
                     for (var k = 0; k < coordinates.Length; ++k)
                     {
@@ -449,7 +451,7 @@ sealed partial class GeoJsonHandler : NpgsqlTypeHandler<GeoJSONObject>,
     public async Task Write(LineString value, NpgsqlWriteBuffer buf, NpgsqlLengthCache? lengthCache, NpgsqlParameter? parameter, bool async, CancellationToken cancellationToken = default)
     {
         var type = EwkbGeometryType.LineString;
-        var size = SizeOfHeader;
+        var size = SizeOfHeaderWithLength;
         var srid = GetSrid(value.CRS);
         if (srid != 0)
         {
@@ -476,7 +478,7 @@ sealed partial class GeoJsonHandler : NpgsqlTypeHandler<GeoJSONObject>,
     public async Task Write(Polygon value, NpgsqlWriteBuffer buf, NpgsqlLengthCache? lengthCache, NpgsqlParameter? parameter, bool async, CancellationToken cancellationToken = default)
     {
         var type = EwkbGeometryType.Polygon;
-        var size = SizeOfHeader;
+        var size = SizeOfHeaderWithLength;
         var srid = GetSrid(value.CRS);
         if (srid != 0)
         {
@@ -498,7 +500,7 @@ sealed partial class GeoJsonHandler : NpgsqlTypeHandler<GeoJSONObject>,
 
         for (var i = 0; i < lines.Count; ++i)
         {
-            if (buf.WriteSpaceLeft < 4)
+            if (buf.WriteSpaceLeft < SizeOfLength)
                 await buf.Flush(async, cancellationToken);
             var coordinates = lines[i].Coordinates;
             buf.WriteInt32(coordinates.Count);
@@ -510,7 +512,7 @@ sealed partial class GeoJsonHandler : NpgsqlTypeHandler<GeoJSONObject>,
     public async Task Write(MultiPoint value, NpgsqlWriteBuffer buf, NpgsqlLengthCache? lengthCache, NpgsqlParameter? parameter, bool async, CancellationToken cancellationToken = default)
     {
         var type = EwkbGeometryType.MultiPoint;
-        var size = SizeOfHeader;
+        var size = SizeOfHeaderWithLength;
         var srid = GetSrid(value.CRS);
         if (srid != 0)
         {
@@ -537,7 +539,7 @@ sealed partial class GeoJsonHandler : NpgsqlTypeHandler<GeoJSONObject>,
     public async Task Write(MultiLineString value, NpgsqlWriteBuffer buf, NpgsqlLengthCache? lengthCache, NpgsqlParameter? parameter, bool async, CancellationToken cancellationToken = default)
     {
         var type = EwkbGeometryType.MultiLineString;
-        var size = SizeOfHeader;
+        var size = SizeOfHeaderWithLength;
         var srid = GetSrid(value.CRS);
         if (srid != 0)
         {
@@ -564,7 +566,7 @@ sealed partial class GeoJsonHandler : NpgsqlTypeHandler<GeoJSONObject>,
     public async Task Write(MultiPolygon value, NpgsqlWriteBuffer buf, NpgsqlLengthCache? lengthCache, NpgsqlParameter? parameter, bool async, CancellationToken cancellationToken = default)
     {
         var type = EwkbGeometryType.MultiPolygon;
-        var size = SizeOfHeader;
+        var size = SizeOfHeaderWithLength;
         var srid = GetSrid(value.CRS);
         if (srid != 0)
         {
@@ -590,7 +592,7 @@ sealed partial class GeoJsonHandler : NpgsqlTypeHandler<GeoJSONObject>,
     public async Task Write(GeometryCollection value, NpgsqlWriteBuffer buf, NpgsqlLengthCache? lengthCache, NpgsqlParameter? parameter, bool async, CancellationToken cancellationToken = default)
     {
         var type = EwkbGeometryType.GeometryCollection;
-        var size = SizeOfHeader;
+        var size = SizeOfHeaderWithLength;
         var srid = GetSrid(value.CRS);
         if (srid != 0)
         {

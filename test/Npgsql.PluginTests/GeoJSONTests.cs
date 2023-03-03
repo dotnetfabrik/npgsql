@@ -8,6 +8,7 @@ using GeoJSON.Net.CoordinateReferenceSystem;
 using GeoJSON.Net.Geometry;
 using Newtonsoft.Json;
 using Npgsql.Tests;
+using NpgsqlTypes;
 using NUnit.Framework;
 using static Npgsql.Tests.TestUtil;
 
@@ -282,6 +283,128 @@ public class GeoJSONTests : TestBase
             await reader.ReadAsync();
             Assert.That(reader[0], Is.EqualTo(point));
             Assert.That(reader[1], Is.EqualTo(point));
+        }
+    }
+
+    [Test, TestCaseSource(nameof(Tests))]
+    public async Task Import_geometry(TestData data)
+    {
+        await using var conn = await OpenConnectionAsync(options: GeoJSONOptions.BoundingBox);
+        var table = await CreateTempTable(conn, "field geometry");
+
+        await using (var writer = await conn.BeginBinaryImportAsync($"COPY {table} (field) FROM STDIN BINARY"))
+        {
+            await writer.StartRowAsync();
+            await writer.WriteAsync(data.Geometry, NpgsqlDbType.Geometry);
+
+            var rowsWritten = await writer.CompleteAsync();
+            Assert.That(rowsWritten, Is.EqualTo(1));
+        }
+
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"SELECT field FROM {table}";
+        await using var reader = await cmd.ExecuteReaderAsync();
+        Assert.IsTrue(await reader.ReadAsync());
+        var actual = reader.GetValue(0);
+        Assert.That(actual, Is.EqualTo(data.Geometry));
+    }
+
+    [Test, IssueLink("https://github.com/npgsql/npgsql/issues/4827")]
+    public async Task Import_big_geometry()
+    {
+        await using var conn = await OpenConnectionAsync();
+        var table = await CreateTempTable(conn, "id text, field geometry");
+
+        var geometry = new MultiLineString(new[] {
+            new LineString(
+                Enumerable.Range(1, 507)
+                    .Select(i => new Position(longitude: i, latitude: i))
+                    .Append(new Position(longitude: 1d, latitude: 1d))),
+            new LineString(new[] {
+                new Position(longitude: 1d, latitude: 1d),
+                new Position(longitude: 1d, latitude: 2d),
+                new Position(longitude: 1d, latitude: 3d),
+                new Position(longitude: 1d, latitude: 1d),
+            })
+        });
+
+        await using (var writer = await conn.BeginBinaryImportAsync($"COPY {table} (id, field) FROM STDIN BINARY"))
+        {
+            await writer.StartRowAsync();
+            await writer.WriteAsync("a", NpgsqlDbType.Text);
+            await writer.WriteAsync(geometry, NpgsqlDbType.Geometry);
+
+            var rowsWritten = await writer.CompleteAsync();
+            Assert.That(rowsWritten, Is.EqualTo(1));
+        }
+
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"SELECT field FROM {table}";
+        await using var reader = await cmd.ExecuteReaderAsync();
+        Assert.IsTrue(await reader.ReadAsync());
+        var actual = reader.GetValue(0);
+        Assert.That(actual, Is.EqualTo(geometry));
+    }
+
+    [Test, TestCaseSource(nameof(Tests))]
+    public async Task Export_geometry(TestData data)
+    {
+        await using var conn = await OpenConnectionAsync(options: GeoJSONOptions.BoundingBox);
+        var table = await CreateTempTable(conn, "field geometry");
+
+        await using (var writer = await conn.BeginBinaryImportAsync($"COPY {table} (field) FROM STDIN BINARY"))
+        {
+            await writer.StartRowAsync();
+            await writer.WriteAsync(data.Geometry, NpgsqlDbType.Geometry);
+
+            var rowsWritten = await writer.CompleteAsync();
+            Assert.That(rowsWritten, Is.EqualTo(1));
+        }
+
+        await using (var reader = await conn.BeginBinaryExportAsync($"COPY {table} (field) TO STDOUT BINARY"))
+        {
+            await reader.StartRowAsync();
+            var field = await reader.ReadAsync<GeoJSONObject>(NpgsqlDbType.Geometry);
+            Assert.That(field, Is.EqualTo(data.Geometry));
+        }
+    }
+
+    [Test, IssueLink("https://github.com/npgsql/npgsql/issues/4830")]
+    public async Task Export_big_geometry()
+    {
+        await using var conn = await OpenConnectionAsync();
+        var table = await CreateTempTable(conn, "id text, field geometry");
+
+        var geometry = new Polygon(new[] {
+            new LineString(
+                Enumerable.Range(1, 507)
+                    .Select(i => new Position(longitude: i, latitude: i))
+                    .Append(new Position(longitude: 1d, latitude: 1d))),
+            new LineString(new[] {
+                new Position(longitude: 1d, latitude: 1d),
+                new Position(longitude: 1d, latitude: 2d),
+                new Position(longitude: 1d, latitude: 3d),
+                new Position(longitude: 1d, latitude: 1d),
+            })
+        });
+
+        await using (var writer = await conn.BeginBinaryImportAsync($"COPY {table} (id, field) FROM STDIN BINARY"))
+        {
+            await writer.StartRowAsync();
+            await writer.WriteAsync("aaaa", NpgsqlDbType.Text);
+            await writer.WriteAsync(geometry, NpgsqlDbType.Geometry);
+
+            var rowsWritten = await writer.CompleteAsync();
+            Assert.That(rowsWritten, Is.EqualTo(1));
+        }
+
+        await using (var reader = await conn.BeginBinaryExportAsync($"COPY {table} (id, field) TO STDOUT BINARY"))
+        {
+            await reader.StartRowAsync();
+            var id = await reader.ReadAsync<string>();
+            var field = await reader.ReadAsync<GeoJSONObject>(NpgsqlDbType.Geometry);
+            Assert.That(id, Is.EqualTo("aaaa"));
+            Assert.That(field, Is.EqualTo(geometry));
         }
     }
 

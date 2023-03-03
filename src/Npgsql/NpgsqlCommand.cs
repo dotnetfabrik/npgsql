@@ -1346,20 +1346,33 @@ GROUP BY pg_proc.proargnames, pg_proc.proargtypes, pg_proc.proallargtypes, pg_pr
                     {
                     case true:
                         Debug.Assert(_connectorPreparedOn != null);
-                        if (_connectorPreparedOn != connector)
-                        {
-                            // The command was prepared, but since then the connector has changed. Detach all prepared statements.
-                            foreach (var s in InternalBatchCommands)
-                                s.PreparedStatement = null;
-                            ResetPreparation();
-                            goto case false;
-                        }
-
                         if (IsWrappedByBatch)
+                        {
                             foreach (var batchCommand in InternalBatchCommands)
+                            {
+                                if (batchCommand.ConnectorPreparedOn != connector)
+                                {
+                                    foreach (var s in InternalBatchCommands)
+                                        s.ResetPreparation();
+                                    ResetPreparation();
+                                    goto case false;
+                                }
+                                
                                 batchCommand.Parameters.ProcessParameters(dataSource.TypeMapper, validateParameterValues, CommandType);
+                            }
+                        }
                         else
+                        {
+                            if (_connectorPreparedOn != connector)
+                            {
+                                // The command was prepared, but since then the connector has changed. Detach all prepared statements.
+                                foreach (var s in InternalBatchCommands)
+                                    s.PreparedStatement = null;
+                                ResetPreparation();
+                                goto case false;
+                            }
                             Parameters.ProcessParameters(dataSource.TypeMapper, validateParameterValues, CommandType);
+                        }
 
                         NpgsqlEventSource.Log.CommandStartPrepared();
                         break;
@@ -1377,7 +1390,10 @@ GROUP BY pg_proc.proargnames, pg_proc.proargtypes, pg_proc.proallargtypes, pg_pr
                                 ProcessRawQuery(connector.SqlQueryParser, connector.UseConformingStrings, batchCommand);
 
                                 if (connector.Settings.MaxAutoPrepare > 0 && batchCommand.TryAutoPrepare(connector))
+                                {
+                                    batchCommand.ConnectorPreparedOn = connector;
                                     numPrepared++;
+                                }
                             }
                         }
                         else
@@ -1415,9 +1431,7 @@ GROUP BY pg_proc.proargnames, pg_proc.proargtypes, pg_proc.proallargtypes, pg_pr
                     TraceCommandStart(connector);
 
                     // If a cancellation is in progress, wait for it to "complete" before proceeding (#615)
-                    lock (connector.CancelLock)
-                    {
-                    }
+                    connector.ResetCancellation();
 
                     // We do not wait for the entire send to complete before proceeding to reading -
                     // the sending continues in parallel with the user's reading. Waiting for the
@@ -1609,7 +1623,7 @@ GROUP BY pg_proc.proargnames, pg_proc.proargtypes, pg_proc.proallargtypes, pg_pr
     {
         Debug.Assert(CurrentActivity is null);
         if (NpgsqlActivitySource.IsEnabled)
-            CurrentActivity = NpgsqlActivitySource.CommandStart(connector, CommandText);
+            CurrentActivity = NpgsqlActivitySource.CommandStart(connector, CommandText, CommandType);
     }
 
     internal void TraceReceivedFirstResponse()
