@@ -1,13 +1,17 @@
 ﻿using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Threading.Tasks;
+
 using Npgsql.PostgresTypes;
 using Npgsql.Util;
 
 namespace Npgsql.Internal;
+
+using System.Diagnostics;
+
+using Microsoft.Extensions.Logging;
 
 /// <summary>
 /// Base class for implementations which provide information about PostgreSQL and PostgreSQL-like databases
@@ -303,9 +307,13 @@ public abstract class NpgsqlDatabaseInfo
 
     internal static async Task<NpgsqlDatabaseInfo> Load(NpgsqlConnector conn, NpgsqlTimeout timeout, bool async)
     {
+        var sw = Stopwatch.StartNew();
         foreach (var factory in Factories)
         {
+            sw.Restart();
             var dbInfo = await factory.Load(conn, timeout, async);
+            sw.Stop();
+            conn.ConnectionLogger?.LogInformation("{DatabaseInfoFactory} for {Database} took {ElapsedS:n3}s for non-null dbinfo: {NonNullDbInfo}", factory.GetType().Name, conn.Database, sw.Elapsed.TotalSeconds, dbInfo != null);
             if (dbInfo != null)
             {
                 dbInfo.ProcessTypes();
