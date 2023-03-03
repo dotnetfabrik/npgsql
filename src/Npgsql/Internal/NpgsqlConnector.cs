@@ -233,7 +233,13 @@ public sealed partial class NpgsqlConnector : IDisposable
     /// Contains the UTC timestamp when this connector was opened, used to implement
     /// <see cref="NpgsqlConnectionStringBuilder.ConnectionLifetime"/>.
     /// </summary>
-    internal DateTime OpenTimestamp { get; private set; }
+    public DateTime OpenTimestamp { get; private set; }
+
+    public DateTime? LastRentalTimestamp { get; internal set; }
+
+    public StackTrace? LastRentalStackTrace { get; internal set; }
+
+    public DateTime? LastRentalReturnTimestamp { get; internal set; }
 
     internal int ClearCounter { get; set; }
 

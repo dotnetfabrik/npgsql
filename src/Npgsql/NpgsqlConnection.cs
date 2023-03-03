@@ -62,6 +62,10 @@ public sealed class NpgsqlConnection : DbConnection, ICloneable, IComponent
 
     NpgsqlDataSource? _dataSource;
 
+    /// <summary>Retrieves (rental) statistics for the managed connectors.</summary>
+    public object? GetConnectorStatistics()
+        => NpgsqlDataSource.GetConnectorStatistics();
+
     internal NpgsqlDataSource NpgsqlDataSource
     {
         get

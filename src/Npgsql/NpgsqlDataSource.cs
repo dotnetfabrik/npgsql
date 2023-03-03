@@ -25,6 +25,10 @@ public abstract class NpgsqlDataSource : DbDataSource
     /// <inheritdoc />
     public override string ConnectionString { get; }
 
+    /// <summary>Retrieves (rental) statistics for the managed connectors.</summary>
+    public virtual object? GetConnectorStatistics()
+        => "Not overridden in " + GetType().Name;
+
     /// <summary>
     /// Contains the connection string returned to the user from <see cref="NpgsqlConnection.ConnectionString"/>
     /// after the connection has been opened. Does not contain the password unless Persist Security Info=true.

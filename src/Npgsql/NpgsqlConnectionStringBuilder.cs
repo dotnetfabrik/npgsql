@@ -355,6 +355,25 @@ public sealed partial class NpgsqlConnectionStringBuilder : DbConnectionStringBu
     bool _enlist;
 
     /// <summary>
+    /// Whether to logConnectorRentalStacktraces.
+    /// </summary>
+    [Category("Connection")]
+    [Description("Whether to logConnectorRentalStacktraces.")]
+    [DisplayName("LogConnectorRentalStacktraces")]
+    [DefaultValue(true)]
+    [NpgsqlConnectionStringProperty]
+    public bool LogConnectorRentalStacktraces
+    {
+        get => _logConnectorRentalStacktraces;
+        set
+        {
+            _logConnectorRentalStacktraces = value;
+            SetValue(nameof(LogConnectorRentalStacktraces), value);
+        }
+    }
+    bool _logConnectorRentalStacktraces;
+
+    /// <summary>
     /// Gets or sets the schema search path.
     /// </summary>
     [Category("Connection")]

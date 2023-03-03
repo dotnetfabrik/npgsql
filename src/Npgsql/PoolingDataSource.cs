@@ -6,11 +6,15 @@ using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 using System.Transactions;
+
 using Microsoft.Extensions.Logging;
+
 using Npgsql.Internal;
 using Npgsql.Util;
 
 namespace Npgsql;
+
+using System.Linq;
 
 class PoolingDataSource : NpgsqlDataSource
 {
@@ -75,6 +79,39 @@ class PoolingDataSource : NpgsqlDataSource
 
     internal sealed override bool OwnsConnectors => true;
 
+    /// <inheritdoc />
+    public override object? GetConnectorStatistics()
+    {
+        var now = DateTime.UtcNow;
+        var connectorDetails = Connectors.Select(
+            c => c is { } connector
+                ? new
+                {
+                    PID = connector.Id,
+                    connector.OpenTimestamp,
+                    OpenTimeAge = now - connector.OpenTimestamp,
+                    connector.LastRentalTimestamp,
+                    LastRentalAge = now - connector.LastRentalTimestamp,
+                    connector.LastRentalReturnTimestamp,
+                    LastRentalReturnAge = now - connector.LastRentalReturnTimestamp,
+                    connector.State,
+                    connector.TransactionStatus,
+                    LastRentalStackTrace = connector.LastRentalStackTrace?.ToString(),
+                }
+                : null)
+            .ToList();
+        var stats = Statistics;
+        return new
+        {
+            CurrentTime = now,
+            stats.Total,
+            stats.Idle,
+            IdleInReader = _idleConnectorReader.Count,
+            stats.Busy,
+            Details = connectorDetails,
+        };
+    }
+
     internal PoolingDataSource(
         NpgsqlConnectionStringBuilder settings,
         NpgsqlDataSourceConfiguration dataSourceConfig,
@@ -116,14 +153,20 @@ class PoolingDataSource : NpgsqlDataSource
         _logger = LoggingConfiguration.ConnectionLogger;
     }
 
-    internal sealed override ValueTask<NpgsqlConnector> Get(
+    internal sealed override async ValueTask<NpgsqlConnector> Get(
         NpgsqlConnection conn, NpgsqlTimeout timeout, bool async, CancellationToken cancellationToken)
     {
         CheckDisposed();
 
-        return TryGetIdleConnector(out var connector)
-            ? new ValueTask<NpgsqlConnector>(connector)
-            : RentAsync(conn, timeout, async, cancellationToken);
+        if (!TryGetIdleConnector(out var connector))
+            connector = await RentAsync(conn, timeout, async, cancellationToken).ConfigureAwait(false);
+
+        connector.LastRentalTimestamp = DateTime.UtcNow;
+        if (Settings.LogConnectorRentalStacktraces)
+            connector.LastRentalStackTrace = new StackTrace(1, true);
+        connector.LastRentalReturnTimestamp = null;
+
+        return connector;
 
         async ValueTask<NpgsqlConnector> RentAsync(
             NpgsqlConnection conn, NpgsqlTimeout timeout, bool async, CancellationToken cancellationToken)
@@ -304,6 +347,8 @@ class PoolingDataSource : NpgsqlDataSource
         Debug.Assert(!connector.InTransaction);
         Debug.Assert(connector.MultiplexAsyncWritingLock == 0 || connector.IsBroken || connector.IsClosed,
             $"About to return multiplexing connector to the pool, but {nameof(connector.MultiplexAsyncWritingLock)} is {connector.MultiplexAsyncWritingLock}");
+
+        connector.LastRentalReturnTimestamp = DateTime.UtcNow;
 
         // If Clear/ClearAll has been been called since this connector was first opened,
         // throw it away. The same if it's broken (in which case CloseConnector is only
