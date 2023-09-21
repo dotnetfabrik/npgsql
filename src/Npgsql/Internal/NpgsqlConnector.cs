@@ -288,6 +288,8 @@ public sealed partial class NpgsqlConnector : IDisposable
     internal bool AttemptPostgresCancellation { get; private set; }
     static readonly TimeSpan _cancelImmediatelyTimeout = TimeSpan.FromMilliseconds(-1);
 
+    X509Certificate2? _certificate;
+
     internal NpgsqlLoggingConfiguration LoggingConfiguration { get; }
 
     internal ILogger ConnectionLogger { get; }
@@ -641,10 +643,12 @@ public sealed partial class NpgsqlConnector : IDisposable
     internal async ValueTask<DatabaseState> QueryDatabaseState(
         NpgsqlTimeout timeout, bool async, CancellationToken cancellationToken = default)
     {
-        using var cmd = CreateCommand("select pg_is_in_recovery(); SHOW default_transaction_read_only");
-        cmd.CommandTimeout = (int)timeout.CheckAndGetTimeLeft().TotalSeconds;
+        using var batch = CreateBatch();
+        batch.BatchCommands.Add(new NpgsqlBatchCommand("select pg_is_in_recovery()"));
+        batch.BatchCommands.Add(new NpgsqlBatchCommand("SHOW default_transaction_read_only"));
+        batch.Timeout = (int)timeout.CheckAndGetTimeLeft().TotalSeconds;
 
-        var reader = async ? await cmd.ExecuteReaderAsync(cancellationToken) : cmd.ExecuteReader();
+        var reader = async ? await batch.ExecuteReaderAsync(cancellationToken) : batch.ExecuteReader();
         try
         {
             if (async)
@@ -762,7 +766,6 @@ public sealed partial class NpgsqlConnector : IDisposable
 
     async Task RawOpen(SslMode sslMode, NpgsqlTimeout timeout, bool async, CancellationToken cancellationToken, bool isFirstAttempt = true)
     {
-        var cert = default(X509Certificate2?);
         try
         {
             if (async)
@@ -821,23 +824,23 @@ public sealed partial class NpgsqlConnector : IDisposable
 #if NET5_0_OR_GREATER
                             // It's PEM time
                             var keyPath = Settings.SslKey ?? PostgresEnvironment.SslKey ?? PostgresEnvironment.SslKeyDefault;
-                            cert = string.IsNullOrEmpty(password)
+                            _certificate = string.IsNullOrEmpty(password)
                                 ? X509Certificate2.CreateFromPemFile(certPath, keyPath)
                                 : X509Certificate2.CreateFromEncryptedPemFile(certPath, password, keyPath);
                             if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
                             {
                                 // Windows crypto API has a bug with pem certs
                                 // See #3650
-                                using var previousCert = cert;
-                                cert = new X509Certificate2(cert.Export(X509ContentType.Pkcs12));
+                                using var previousCert = _certificate;
+                                _certificate = new X509Certificate2(_certificate.Export(X509ContentType.Pkcs12));
                             }
 #else
                             throw new NotSupportedException("PEM certificates are only supported with .NET 5 and higher");
 #endif
                         }
 
-                        cert ??= new X509Certificate2(certPath, password);
-                        clientCertificates.Add(cert);
+                        _certificate ??= new X509Certificate2(certPath, password);
+                        clientCertificates.Add(_certificate);
                     }
 
                     ClientCertificatesCallback?.Invoke(clientCertificates);
@@ -852,7 +855,7 @@ public sealed partial class NpgsqlConnector : IDisposable
                             throw new ArgumentException(string.Format(NpgsqlStrings.CannotUseSslVerifyWithUserCallback, sslMode));
 
                         if (Settings.RootCertificate is not null)
-                            throw new ArgumentException(string.Format(NpgsqlStrings.CannotUseSslRootCertificateWithUserCallback));
+                            throw new ArgumentException(NpgsqlStrings.CannotUseSslRootCertificateWithUserCallback);
 
                         certificateValidationCallback = UserCertificateValidationCallback;
                     }
@@ -918,7 +921,8 @@ public sealed partial class NpgsqlConnector : IDisposable
         }
         catch
         {
-            cert?.Dispose();
+            _certificate?.Dispose();
+            _certificate = null;
 
             _stream?.Dispose();
             _stream = null!;
@@ -1705,7 +1709,7 @@ public sealed partial class NpgsqlConnector : IDisposable
     internal void PerformUserCancellation()
     {
         var connection = Connection;
-        if (connection is null || connection.ConnectorBindingScope == ConnectorBindingScope.Reader)
+        if (connection is null || connection.ConnectorBindingScope == ConnectorBindingScope.Reader || UserCancellationRequested)
             return;
 
         // Take the lock first to make sure there is no concurrent Break.
@@ -1720,13 +1724,17 @@ public sealed partial class NpgsqlConnector : IDisposable
             Monitor.Enter(CancelLock);
         }
 
-        // Wait before we've read all responses for the prepended queries
-        // as we can't gracefully handle their cancellation.
-        // Break makes sure that it's going to be set even if we fail while reading them.
-        ReadingPrependedMessagesMRE.Wait();
-
         try
         {
+            // Wait before we've read all responses for the prepended queries
+            // as we can't gracefully handle their cancellation.
+            // Break makes sure that it's going to be set even if we fail while reading them.
+
+            // We don't wait indefinitely to avoid deadlocks from synchronous CancellationToken.Register
+            // See #5032
+            if (!ReadingPrependedMessagesMRE.Wait(0))
+                return;
+
             _userCancellationRequested = true;
 
             if (AttemptPostgresCancellation && SupportsPostgresCancellation)
@@ -2166,6 +2174,12 @@ public sealed partial class NpgsqlConnector : IDisposable
         Connection = null;
         PostgresParameters.Clear();
         _currentCommand = null;
+
+        if (_certificate is not null)
+        {
+            _certificate.Dispose();
+            _certificate = null;
+        }
     }
 
     void GenerateResetMessage()
@@ -2285,6 +2299,20 @@ public sealed partial class NpgsqlConnector : IDisposable
     {
         if (_origReadBuffer != null)
         {
+            Debug.Assert(_origReadBuffer.ReadBytesLeft == 0);
+            Debug.Assert(_origReadBuffer.ReadPosition == 0);
+            if (ReadBuffer.ReadBytesLeft > 0)
+            {
+                // There is still something in the buffer which we haven't read yet
+                // In most cases it's ParameterStatus which can be sent asynchronously
+                // If in some extreme case we have too much data left in the buffer to store in the original buffer
+                // we just leave the oversize buffer as is and will try again on next reset
+                if (ReadBuffer.ReadBytesLeft > _origReadBuffer.Size)
+                    return;
+
+                ReadBuffer.CopyTo(_origReadBuffer);
+            }
+
             ReadBuffer.Dispose();
             ReadBuffer = _origReadBuffer;
             _origReadBuffer = null;
@@ -2634,6 +2662,12 @@ public sealed partial class NpgsqlConnector : IDisposable
     /// <param name="cmdText">The text of the query.</param>
     /// <returns>A <see cref="NpgsqlCommand"/> object.</returns>
     public NpgsqlCommand CreateCommand(string? cmdText = null) => new(cmdText, this);
+
+    /// <summary>
+    /// Creates and returns a <see cref="NpgsqlBatch"/> object associated with the <see cref="NpgsqlConnector"/>.
+    /// </summary>
+    /// <returns>A <see cref="NpgsqlBatch"/> object.</returns>
+    public NpgsqlBatch CreateBatch() => new NpgsqlBatch(this);
 
     void ReadParameterStatus(ReadOnlySpan<byte> incomingName, ReadOnlySpan<byte> incomingValue)
     {
